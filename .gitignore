@@ -4,6 +4,6 @@ data/
 exp/
 ZZZ_Abandon_Code/
 ZZZ_pic/
-
+model_test/
 # 防止忽略文件夹下的 .gitignore 本身（新手可忽略）
 !*/.gitignore
