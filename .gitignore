@@ -1,0 +1,9 @@
+专利/
+abandon_expData/
+data/
+exp/
+ZZZ_Abandon_Code/
+ZZZ_pic/
+
+# 防止忽略文件夹下的 .gitignore 本身（新手可忽略）
+!*/.gitignore

@@ -1,0 +1,5 @@
+# ninja log v7
+2	612	1759235710753029200	/mnt/data2/xiaoyu_data/FD_PTV3/libs/pointgroup_ops/build/temp.linux-x86_64-cpython-310/src/bfs_cluster_kernel.o	dc06d1a96e3158ce
+1	14210	1759235710752130600	/mnt/data2/xiaoyu_data/FD_PTV3/libs/pointgroup_ops/build/temp.linux-x86_64-cpython-310/src/bfs_cluster.o	136eb50c29639952
+32	595	1759239637284875900	/mnt/data2/xiaoyu_data/FD_PTV3/libs/pointgroup_ops/build/temp.linux-x86_64-cpython-310/src/bfs_cluster_kernel.o	88648d41228b3b5a
+32	14383	1759239637284648100	/mnt/data2/xiaoyu_data/FD_PTV3/libs/pointgroup_ops/build/temp.linux-x86_64-cpython-310/src/bfs_cluster.o	f6d8150dec2a6e7d
