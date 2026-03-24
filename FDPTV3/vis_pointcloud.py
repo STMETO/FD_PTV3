@@ -1,4 +1,3 @@
-
 import os
 import numpy as np
 import open3d as o3d
@@ -404,6 +403,17 @@ def process_and_visualize_flexible(coords_path, args, scene_id,
         # 准备窗口配置
         window_configs = []
         
+        # 解析 solid_color 参数（用于 blank 窗口）
+        try:
+            solid_color = [float(x) for x in args.solid_color.split(',')]
+            if max(solid_color) > 1.0:
+                solid_color = [c / 255.0 for c in solid_color]
+            if len(solid_color) != 3:
+                raise ValueError
+        except:
+            print(f"警告：无效的 solid_color 参数 '{args.solid_color}'，使用默认灰色 [0.5,0.5,0.5]")
+            solid_color = [0.5, 0.5, 0.5]
+        
         # 解析窗口类型
         window_types = args.windows.split(',') if args.windows else []
         
@@ -511,10 +521,15 @@ def process_and_visualize_flexible(coords_path, args, scene_id,
                 else:
                     print(f"警告: 预测2文件不存在: {pred2_path}，跳过此窗口")
             
+            elif window_type == 'blank':
+                # 纯色窗口
+                colors = np.full((coords.shape[0], 3), solid_color)
+                window_configs.append(('blank', colors, "纯色"))
+            
             else:
                 print(f"警告: 未知的窗口类型 '{window_type}'，跳过")
         
-        # 如果没有指定窗口或所有窗口都无效，使用默认单窗口
+        # 如果没有指定窗口或所有窗口都无效，使用默认单窗口显示
         if not window_configs:
             print("没有有效的窗口配置，使用默认单窗口显示")
             colors = np.full((coords.shape[0], 3), 0.5)
@@ -539,7 +554,7 @@ def process_and_visualize_flexible(coords_path, args, scene_id,
 
 def main():
     parser = argparse.ArgumentParser(
-        description="灵活的点云可视化工具 (支持任意窗口组合)。",
+        description="灵活的点云可视化工具 (支持任意窗口组合，包括纯色窗口)。",
         formatter_class=argparse.RawTextHelpFormatter
     )
     
@@ -552,15 +567,21 @@ def main():
     # 窗口配置参数
     parser.add_argument("--windows", type=str, default="", 
                     help="指定要显示的窗口类型和顺序，用逗号分隔。\n"
-                            "可用类型: color(原始颜色), gt(真值语义), instance(实例分割), pred1(预测1), pred2(预测2)\n"
+                            "可用类型: color(原始颜色), gt(真值语义), instance(实例分割), pred1(预测1), pred2(预测2), blank(纯色)\n"
                             "示例: --windows color,gt,pred1,pred2\n"
                             "      --windows color,instance\n"
-                            "      --windows gt,instance,pred1")
+                            "      --windows gt,instance,pred1\n"
+                            "      --windows blank               # 只显示纯色窗口\n"
+                            "      --windows color,blank,gt      # 混合显示")
     
     # 预测配置参数
     parser.add_argument("--compare_pred_dir", type=str, default=None, help="用于第二个预测的目录")
     parser.add_argument("--pred1_name", type=str, default="预测1", help="第一个预测的名称")
     parser.add_argument("--pred2_name", type=str, default="预测2", help="第二个预测的名称")
+    
+    # 纯色窗口参数
+    parser.add_argument("--solid_color", type=str, default="0.5,0.5,0.5",
+                    help="纯色窗口的颜色，格式为 R,G,B，取值范围 0~1 或 0~255。例如 '0.7,0.2,0.9'")
     
     # 其他参数
     parser.add_argument("--mode", type=str, default="segment", choices=["color", "segment", "instance"], 
