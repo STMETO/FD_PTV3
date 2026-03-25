@@ -281,7 +281,7 @@ def visualize_flexible_pointclouds(coords, window_configs, scene_id, args):
             # 设置渲染选项
             opt = vis.get_render_option()
             opt.point_size = 2.0
-            opt.background_color = np.asarray([0.0, 0.0, 0.0])
+            opt.background_color = np.asarray([1.0, 1.0, 1.0] )  # 白色背景，黑色[0.0, 0.0, 0.0]
         
         # 显示窗口信息
         print(f"显示 {num_windows} 个窗口对比: {scene_id}")
@@ -347,7 +347,7 @@ def visualize_single_pointcloud(coords, colors, title="", output_path=None, dela
             vis.add_geometry(pcd)
             opt = vis.get_render_option()
             opt.point_size = 2.0
-            opt.background_color = np.asarray([0.0, 0.0, 0.0])
+            opt.background_color = np.asarray([1.0, 1.0, 1.0]) # 白色背景，黑色[0.0, 0.0, 0.0]
             vis.run()
         finally:
             vis.destroy_window()
