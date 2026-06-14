@@ -185,4 +185,4 @@ def eval_fed_model(model, val_loader, writer, logger, round_idx, cfg): # round �
                 logger.debug(f"  Class_{i}: 无目标样本，跳过 IoU/Acc 打印。")
 
 
-    return m_iou, m_acc, all_acc, loss_avg
+    return m_iou, m_acc, all_acc, loss_avg  
