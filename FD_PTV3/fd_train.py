@@ -127,6 +127,15 @@ def main_worker(cfg):
     _set_cfg(cfg, "user_id", -1)
     _set_cfg(cfg, "total_round", -1)
 
+    # ★ 自动检测显存：≤12GB 时自动开 AMP，否则 FP32 OOM
+    vram_gb = torch.cuda.get_device_properties(0).total_memory / 1e9 if torch.cuda.is_available() else 0
+    if vram_gb <= 12 and not _get_cfg(cfg, "enable_amp"):
+        _set_cfg(cfg, "enable_amp", True)
+        glogger.info(f"[Auto-AMP] 检测到 {vram_gb:.1f}GB 显存 ≤ 12GB，自动启用混合精度 (FP16)")
+    glogger.info(f"[GPU] {torch.cuda.get_device_name(0)} | {vram_gb:.1f}GB VRAM | "
+                 f"AMP={'ON' if _get_cfg(cfg,'enable_amp') else 'OFF'} | "
+                 f"batch_size={_get_cfg(cfg,'batch_size',1)}")
+
     # CUDA 显存优化
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "max_split_size_mb:128,expandable_segments:True")
 
