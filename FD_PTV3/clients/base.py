@@ -225,11 +225,13 @@ class BaseFedClient(fl.client.NumPyClient):
         return 1
 
     def _cleanup_after_training(self):
-        """训练后清理 GPU 内存"""
+        """训练后清理 GPU 内存（Ray Worker 析构前最后一道防线）"""
+        import gc
         if self._local_model is not None:
             del self._local_model
             self._local_model = None
         if self._global_model is not None:
             del self._global_model
             self._global_model = None
+        gc.collect()
         torch.cuda.empty_cache()

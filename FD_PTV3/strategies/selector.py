@@ -151,6 +151,7 @@ def build_strategy(
         server_momentum_scheduler=server_momentum_scheduler,
         writer=writer,
         save_path=save_path,
+        round_offset=resume_round,  # Flower Simulation 断点续传：策略内部使用绝对轮次
     )
 
     # ---- 选择策略 ----

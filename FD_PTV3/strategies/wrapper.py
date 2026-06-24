@@ -48,6 +48,11 @@ class BaseFederatedStrategy:
 
     子类只需实现 _do_aggregate(client_weights, round_idx) → state_dict。
     调度器、验证、断点保存由基类自动处理。
+
+    round_offset: 断点续传时的轮次偏移量。
+        例如 resume_round=50 时，round_offset=50，
+        Simulation 内的 server_round=1 → 实际 round_idx=0+50=50，
+        保证日志/调度器/TensorBoard 步数与绝对轮次一致。
     """
 
     def __init__(
@@ -60,6 +65,7 @@ class BaseFederatedStrategy:
         server_momentum_scheduler=None,
         writer=None,
         save_path: str = "./",
+        round_offset: int = 0,
         **kwargs,
     ):
         self.cfg = cfg
@@ -71,6 +77,7 @@ class BaseFederatedStrategy:
         self.writer = writer
         self.save_path = save_path
         self.current_round = 0
+        self.round_offset = round_offset
         self.global_model_path = os.path.join(save_path, "Fed_model", "global_last.pth")
 
     # ================================================================
@@ -101,8 +108,8 @@ class BaseFederatedStrategy:
         )
 
     def configure_fit(self, server_round, parameters, client_manager):
-        """注入 round_idx 到客户端配置"""
-        config = {"round_idx": server_round - 1}
+        """注入 round_idx 到客户端配置（含 round_offset 支持断点续传）"""
+        config = {"round_idx": server_round - 1 + self.round_offset}
         fit_ins = FitIns(parameters, config)
         return [(cid, fit_ins) for cid in client_manager.all().keys()]
 
@@ -112,8 +119,8 @@ class BaseFederatedStrategy:
         results: List[Tuple[ClientProxy, fl.common.FitRes]],
         failures: List[BaseException],
     ) -> Tuple[Optional[Parameters], Dict[str, Scalar]]:
-        """聚合 + 钩子"""
-        round_idx = server_round - 1
+        """聚合 + 钩子（round_offset 保证断点续传时绝对轮次正确）"""
+        round_idx = server_round - 1 + self.round_offset
         self.current_round = round_idx
 
         if not results:
@@ -258,10 +265,11 @@ class BaseFederatedStrategy:
     # ================================================================
 
     def state_dict(self):
-        return {"current_round": self.current_round}
+        return {"current_round": self.current_round, "round_offset": self.round_offset}
 
     def load_state_dict(self, state_dict):
         self.current_round = state_dict.get("current_round", self.current_round)
+        self.round_offset = state_dict.get("round_offset", self.round_offset)
 
     def update_lr(self, new_lr):
         pass
@@ -287,8 +295,8 @@ class NativeStrategyWrapper(BaseFederatedStrategy):
         self._latest_parameters = None  # 缓存最新全局参数
 
     def configure_fit(self, server_round, parameters, client_manager):
-        """使用原生策略的逻辑 + 注入 round_idx"""
-        config = {"round_idx": server_round - 1}
+        """使用原生策略的逻辑 + 注入 round_idx（含 round_offset）"""
+        config = {"round_idx": server_round - 1 + self.round_offset}
 
         # 调用原生策略的 configure_fit，然后注入 config
         try:
@@ -319,8 +327,9 @@ class NativeStrategyWrapper(BaseFederatedStrategy):
         """
         调用原生策略聚合，然后运行钩子。
         每次客户端训练后，全局模型由原生策略自动更新。
+        round_offset 保证断点续传时绝对轮次正确。
         """
-        round_idx = server_round - 1
+        round_idx = server_round - 1 + self.round_offset
         self.current_round = round_idx
 
         if not results:
