@@ -76,16 +76,19 @@ class BaseFedClient(fl.client.NumPyClient):
         # 3. 训练
         self.glogger.info(f"(第{round_idx + 1}轮) 用户 {self.client_id + 1} 开始训练...")
         self._run_local_training(user_cfg)
-        self.glogger.info(f"(第{round_idx + 1}轮) 用户 {self.client_id + 1} 训练完成")
+        self.glogger.info(f"(第{round_idx + 1}轮) 用户 {self.client_id + 1} 训练完成，提取权重...")
 
-        # 4. 提取并处理权重
+        # 4. 提取 + 处理权重（可能在 GPU 上做二值化等操作）
         processed_weights = self._process_local_weights(round_idx)
 
-        # 5. 序列化
-        serialized = self._serialize_weights(processed_weights)
+        # ★ 关键：立即将权重移 CPU，释放 GPU 显存给下一个用户
+        processed_weights = self._move_weights_to_cpu(processed_weights)
 
-        # 6. 清理
+        # 5. 清理 GPU 资源（必须在序列化之前！）
         self._cleanup_after_training()
+
+        # 6. 序列化（纯 CPU 操作）
+        serialized = self._serialize_weights(processed_weights)
 
         num_examples = self._get_num_examples(user_cfg)
         return serialized, num_examples, {"client_id": self.client_id}
@@ -159,12 +162,26 @@ class BaseFedClient(fl.client.NumPyClient):
 
     def _run_local_training(self, user_cfg):
         """执行本地训练"""
+        self.glogger.info(f"(第{_get_cfg(user_cfg, 'current_round', 0) + 1}轮) 用户 {self.client_id + 1} 训练中...")
         self._local_model.train()
+        self.glogger.info(f"(第{_get_cfg(user_cfg, 'current_round', 0) + 1}轮) 用户 {self.client_id + 1} 训练结束，提取权重...")
 
     def _process_local_weights(self, round_idx) -> Dict:
-        """提取并处理本地权重（子类可重写）"""
-        local_weights = copy.deepcopy(self._local_model.model.state_dict())
-        return local_weights
+        """提取并处理本地权重（子类可重写，如 binarize）"""
+        return {k: v.detach().clone() for k, v in self._local_model.model.state_dict().items()}
+
+    @staticmethod
+    def _move_weights_to_cpu(weights: Dict) -> Dict:
+        """递归将所有 tensor 移 CPU，释放 GPU 显存"""
+        result = {}
+        for k, v in weights.items():
+            if isinstance(v, torch.Tensor):
+                result[k] = v.detach().cpu()
+            elif isinstance(v, dict):
+                result[k] = BaseFedClient._move_weights_to_cpu(v)
+            else:
+                result[k] = v
+        return result
 
     def _serialize_weights(self, weights: Dict) -> list:
         """序列化权重为 Flower 格式"""
@@ -181,13 +198,19 @@ class BaseFedClient(fl.client.NumPyClient):
 
     def _deserialize_weights(self, parameters) -> Dict:
         """从 Flower 格式反序列化权重"""
+        if not parameters:
+            return {}
+        # 结构化模式（pickle 打包，单个 uint8 ndarray）
+        if len(parameters) == 1 and parameters[0].dtype == np.uint8:
+            return unpack_structured_weights(parameters)
+        # 标准模式（需要 state_keys）
         if self.state_keys and len(parameters) == len(self.state_keys):
             return parameters_to_state_dict(
                 [np.array(p) if not isinstance(p, np.ndarray) else p for p in parameters],
                 self.state_keys,
             )
-        # 结构化模式
-        return unpack_structured_weights(parameters)
+        # Fallback：没有 keys 时返回空（会在 _init_model 中从 trainer model 获取 keys）
+        return {}
 
     def _get_num_examples(self, user_cfg) -> int:
         """获取训练样本数（用于加权聚合）"""

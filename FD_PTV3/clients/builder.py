@@ -23,9 +23,12 @@ def get_client_class(client_type: str):
     return BaseFedClient
 
 
-def build_client_fn(cfg, glogger):
+def build_client_fn(cfg, glogger, state_keys=None):
     """
     构建 Flower simulation 的 client_fn。
+
+    Args:
+        state_keys: 全局模型参数名列表，用于反序列化
 
     Returns:
         callable: client_fn(cid: str) → NumPyClient
@@ -45,7 +48,7 @@ def build_client_fn(cfg, glogger):
             client_id=int(cid),
             cfg=cfg,
             glogger=glogger,
-            state_keys=None,
+            state_keys=state_keys,
         )
 
     return client_fn

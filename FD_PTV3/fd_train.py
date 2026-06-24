@@ -16,6 +16,7 @@ import os
 import sys
 import copy
 import logging
+import numpy as np
 import torch
 
 from pointcept.engines.defaults import (
@@ -29,12 +30,19 @@ from pointcept.utils.logger import get_root_logger
 
 # ---- FD_PTV3 模块 ----
 from .utils.config import _set_cfg, _get_cfg
-from .utils.environment import setup_environment, cleanup_previous_artifacts
-from .utils.checkpoint import load_resume_state, save_resume_state, cleanup_fed_state
+from .utils.environment import setup_environment, cleanup_previous_artifacts, cleanup_client_checkpoints
+from .utils.checkpoint import load_resume_state, save_resume_state, save_fed_state, cleanup_fed_state
 from .utils.wandb_utils import setup_wandb
+from .utils.validation import eval_fed_model
 from .data_splitter.builder import validate_data_split
 from .clients.builder import build_client_fn
 from .strategies.selector import build_strategy
+from .scheduling.updater import update_schedulers
+from .communication.serialization import (
+    state_dict_to_parameters,
+    parameters_to_state_dict,
+    unpack_structured_weights,
+)
 
 
 def initialize_global_model(cfg):
@@ -43,6 +51,31 @@ def initialize_global_model(cfg):
     model = trainer.model
     del trainer
     return model
+
+
+def validate_and_log(net_glob, round_idx, cfg, writer, glogger):
+    """验证全局模型并记录结果（与原 FDPTV3_Train.py 一致）"""
+    from torch.utils.data import DataLoader
+    from pointcept.datasets import build_dataset, collate_fn
+
+    val_data = build_dataset(cfg.data.val)
+    val_loader = DataLoader(
+        val_data,
+        batch_size=_get_cfg(cfg, "batch_size_val_per_gpu", 1),
+        shuffle=False,
+        num_workers=_get_cfg(cfg, "num_worker_per_gpu", 1),
+        pin_memory=True,
+        collate_fn=collate_fn,
+    )
+
+    m_iou, m_acc, all_acc, loss_avg = eval_fed_model(
+        net_glob, val_loader, writer, glogger, round_idx + 1, cfg=cfg)
+
+    glogger.info(
+        f"轮 {round_idx + 1} 联邦聚合模型验证完成: "
+        f"mIoU={m_iou:.4f}, mAcc={m_acc:.4f}, allAcc={all_acc:.4f}, loss={loss_avg:.4f}")
+
+    return m_iou, m_acc, all_acc, loss_avg
 
 
 def finalize_and_test(net_glob, cfg, save_path, resume_file, glogger):
@@ -112,6 +145,8 @@ def main_worker(cfg):
         return
 
     _set_cfg(cfg, "num_users", NUM_USERS)
+    _set_cfg(cfg, "user_id", -1)
+    _set_cfg(cfg, "total_round", -1)
 
     # ---- WandB ----
     setup_wandb(cfg, save_path, glogger)
@@ -135,7 +170,7 @@ def main_worker(cfg):
             glogger.info(f"[断点恢复] 已加载全局模型")
 
     # ---- 构建 Flower 组件 ----
-    client_fn = build_client_fn(cfg, glogger)
+    client_fn = build_client_fn(cfg, glogger, state_keys=state_keys)
     strategy = build_strategy(
         cfg=cfg, glogger=glogger, global_model=net_glob,
         state_keys=state_keys, writer=writer, save_path=save_path,
@@ -158,20 +193,127 @@ def main_worker(cfg):
 
     glogger.info(f"从第 {resume_round + 1} 轮开始，共 {actual_rounds} 轮")
 
-    try:
-        import flwr as fl
-        history = fl.simulation.start_simulation(
-            client_fn=client_fn,
-            num_clients=NUM_USERS,
-            config=fl.server.ServerConfig(num_rounds=actual_rounds),
-            strategy=strategy,
-        )
-        glogger.info(f"Flower Simulation 完成: {history}")
-    except Exception as e:
-        glogger.error(f"Flower Simulation 失败: {e}")
-        import traceback
-        traceback.print_exc()
-        return
+    # ================================================================
+    # 手动联邦学习训练循环（主进程串行，与原 FDPTV3_Train.py 一致）
+    # 使用 Flower Strategy 进行聚合，客户端在主进程中直接调用
+    # ================================================================
+    for round_idx in range(resume_round, TOTAL_ROUNDS):
+        glogger.info(f"\n{'=' * 20} 第 {round_idx + 1} 轮全局训练开始 {'=' * 20}")
+
+        # GPU 监控
+        try:
+            allocated = torch.cuda.memory_allocated() / 1e9
+            reserved = torch.cuda.memory_reserved() / 1e9
+        except Exception:
+            allocated = reserved = 0.0
+        glogger.info(f"[GPU显存] 分配: {allocated:.2f} GB, 保留: {reserved:.2f} GB")
+
+        # 保存断点
+        save_resume_state(resume_file, round_idx, 0)
+
+        # ---- 训练所有客户端 ----
+        w_locals = []
+        for user_id in range(NUM_USERS):
+            save_resume_state(resume_file, round_idx, user_id)
+
+            glogger.info(f"\n{'=' * 20} (第{round_idx + 1}轮) 初始化用户 {user_id + 1}... {'=' * 20}")
+
+            # 创建客户端
+            client = client_fn(str(user_id))
+
+            # 构建训练配置
+            current_params = state_dict_to_parameters(net_glob.state_dict())
+            config = {"round_idx": round_idx}
+
+            try:
+                # 本地训练
+                result_arrays, num_examples, metrics = client.fit(current_params, config)
+                glogger.info(f"(第{round_idx + 1}轮) 用户 {user_id + 1} 训练完成")
+
+                # 反序列化权重
+                if isinstance(result_arrays, list) and len(result_arrays) > 0:
+                    # 检测是否为结构化权重（Markov 模式：单个大 ndarray）
+                    if len(result_arrays) == 1 and result_arrays[0].dtype == np.uint8:
+                        structured = unpack_structured_weights(result_arrays)
+                        w_locals.append(structured)
+                    else:
+                        sd = parameters_to_state_dict(result_arrays, state_keys)
+                        w_locals.append(sd)
+                else:
+                    w_locals.append({})
+
+            except Exception as e:
+                glogger.error(f"用户 {user_id + 1} 训练失败: {e}")
+                import traceback
+                traceback.print_exc()
+                w_locals.append(None)
+
+            # 结束本地 WandB run
+            if cfg.get("enable_wandb", False):
+                import wandb
+                if wandb.run is not None:
+                    wandb.finish()
+
+            del client
+            torch.cuda.empty_cache()
+
+        # 过滤失败的客户端
+        w_locals = [w for w in w_locals if w is not None and len(w) > 0]
+        if not w_locals:
+            glogger.error(f"第 {round_idx + 1} 轮所有客户端训练失败！")
+            continue
+
+        # ---- 聚合更新 ----
+        glogger.info(f"执行 {AGG_METHOD} 聚合...")
+
+        # 更新学习率
+        if strategy.server_lr_scheduler is not None and hasattr(strategy, 'update_lr'):
+            current_lr = strategy.server_lr_scheduler.get_lr()
+            strategy.update_lr(current_lr)
+
+        # 加载上一轮全局模型
+        global_model_path = os.path.join(save_path, "Fed_model", "global_last.pth")
+        if os.path.isfile(global_model_path):
+            net_glob.load_state_dict(torch.load(global_model_path), strict=False)
+
+        # 执行聚合（使用 Flower Strategy 的 _do_aggregate）
+        aggregated = strategy._do_aggregate(w_locals, round_idx)
+        if aggregated:
+            try:
+                net_glob.load_state_dict(aggregated, strict=False)
+                glogger.info("全局模型已更新")
+            except Exception as e:
+                glogger.warning(f"load_state_dict 失败: {e}")
+
+        # ---- 保存全局模型 ----
+        os.makedirs(os.path.dirname(global_model_path), exist_ok=True)
+        torch.save(net_glob.state_dict(), global_model_path)
+        glogger.info(f"[保存] 已保存全局模型: {global_model_path}")
+
+        # ---- 保存聚合器/调度器状态 ----
+        save_fed_state(save_path, strategy, strategy.server_lr_scheduler,
+                       strategy.server_momentum_scheduler, glogger)
+
+        # ---- 验证 ----
+        m_iou, m_acc, all_acc, loss_avg = validate_and_log(
+            net_glob, round_idx, cfg, writer, glogger)
+
+        # ---- 更新调度器 ----
+        update_schedulers(strategy.server_lr_scheduler, strategy.server_momentum_scheduler,
+                          round_idx, all_acc, None, glogger)
+
+        # ---- 清理客户端检查点 ----
+        cleanup_client_checkpoints(save_path, NUM_USERS, glogger)
+
+        # ---- 更新断点（进入下一轮） ----
+        save_resume_state(resume_file, round_idx + 1, 0)
+
+        # 重新连接 WandB
+        if cfg.get("enable_wandb", False):
+            import wandb
+            if wandb.run is not None:
+                wandb.finish()
+            setup_wandb(cfg, save_path, glogger)
 
     # ---- 收尾 ----
     if cfg.get("enable_wandb", False):

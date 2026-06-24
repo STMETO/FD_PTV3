@@ -42,13 +42,13 @@ def build_dataset_splitter(cfg, glogger=None):
     # 2. 按数据集类型名查找
     elif dataset_type in split_strategy:
         sub = split_strategy[dataset_type]
-        splitter_type = sub.pop("type", None) if isinstance(sub, dict) else None
-        extra_kwargs = sub if isinstance(sub, dict) else {}
+        splitter_type = sub.get("type") if isinstance(sub, dict) else None
+        extra_kwargs = {k: v for k, v in sub.items() if k != "type"} if isinstance(sub, dict) else {}
 
     elif dataset_type.lower() in split_strategy:
         sub = split_strategy[dataset_type.lower()]
-        splitter_type = sub.pop("type", None) if isinstance(sub, dict) else None
-        extra_kwargs = sub if isinstance(sub, dict) else {}
+        splitter_type = sub.get("type") if isinstance(sub, dict) else None
+        extra_kwargs = {k: v for k, v in sub.items() if k != "type"} if isinstance(sub, dict) else {}
 
     # 3. 自动推断
     elif dataset_type in _DATASET_TO_SPLITTER:
