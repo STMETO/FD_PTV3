@@ -158,7 +158,7 @@ class BaseFedClient(fl.client.NumPyClient):
             trainer_local.model.load_state_dict(state_dict, strict=False)
 
         self._local_model = trainer_local
-        self._global_model = copy.deepcopy(trainer_local.model)
+        # Base 客户端不需要全局模型副本（Markov 客户端自己处理）
 
     def _run_local_training(self, user_cfg):
         """执行本地训练"""
@@ -225,9 +225,25 @@ class BaseFedClient(fl.client.NumPyClient):
         return 1
 
     def _cleanup_after_training(self):
-        """训练后清理 GPU 内存（Ray Worker 析构前最后一道防线）"""
+        """训练后清理 GPU 内存 — 显式删 optimizer/scaler/model 再 gc"""
         import gc
         if self._local_model is not None:
+            # 先删子对象释放 GPU 引用，再删父对象
+            for attr in ('optimizer', 'scheduler', 'scaler', 'train_loader', 'val_loader'):
+                if hasattr(self._local_model, attr):
+                    try:
+                        obj = getattr(self._local_model, attr)
+                        del obj
+                        setattr(self._local_model, attr, None)
+                    except Exception:
+                        pass
+            if hasattr(self._local_model, 'model'):
+                try:
+                    m = self._local_model.model
+                    del m
+                    self._local_model.model = None
+                except Exception:
+                    pass
             del self._local_model
             self._local_model = None
         if self._global_model is not None:
@@ -235,3 +251,5 @@ class BaseFedClient(fl.client.NumPyClient):
             self._global_model = None
         gc.collect()
         torch.cuda.empty_cache()
+        if hasattr(torch.cuda, 'ipc_collect'):
+            torch.cuda.ipc_collect()  # Ray 多进程场景下关键

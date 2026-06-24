@@ -37,6 +37,13 @@ class MarkovFedClient(BaseFedClient):
         self.binarize_all_layers = client_cfg.get('binarize_all_layers', True)
         self.verbose = client_cfg.get('verbose', False)
 
+    def _init_model(self, user_cfg, parameters, round_idx):
+        """重写：加载模型后创建全局模型副本（用于二值化统计对比）"""
+        super()._init_model(user_cfg, parameters, round_idx)
+        if self._local_model is not None:
+            import copy
+            self._global_model = copy.deepcopy(self._local_model.model)
+
     def _process_local_weights(self, round_idx) -> Dict:
         """提取 + 二值化"""
         local_w = self._extract_model_weights(self._local_model.model)
