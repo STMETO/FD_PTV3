@@ -1,8 +1,9 @@
 """
-马尔科夫联邦平均客户端
-======================
-实现 MarkovFedClient 的二值化权重处理 + 统计信息收集。
-对应 FDPTV3/fedClient.py 中的 MarkovFedClient 逻辑。
+MarkovFedClient — 自定义客户端
+===============================
+通过 @register_client 装饰器注册，配置文件指定 client.type='MarkovFedClient' 即可自动选中。
+
+实现二值化 + 统计信息收集，对应 FDPTV3/fedClient.py 的 MarkovFedClient。
 """
 
 import copy
@@ -10,14 +11,15 @@ import torch
 import torch.nn as nn
 from typing import Dict, Optional
 
+from ..registry import register_client
 from .base import BaseFedClient
 from .binarize import Binarize
 
 
+@register_client("MarkovFedClient")
 class MarkovFedClient(BaseFedClient):
     """
-    马尔科夫联邦客户端 — 结构化模式。
-    对权重进行二值化，并收集统计信息（均值、方差、相关系数等）用于服务端重建。
+    马尔科夫联邦客户端 — 二值化 + 统计信息。
 
     对应原 FDPTV3 的 MarkovFedClient 类。
     """
@@ -25,153 +27,112 @@ class MarkovFedClient(BaseFedClient):
     def __init__(self, client_id: int, cfg, glogger, state_keys=None):
         super().__init__(client_id, cfg, glogger, state_keys)
 
-        # 从配置中读取 Markov 参数
-        client_cfg = cfg.get("federated", {}).get("client", {}) if isinstance(cfg, dict) else {}
-        if not client_cfg and hasattr(cfg, 'federated') and hasattr(cfg.federated, 'client'):
-            client_cfg = cfg.federated.client
+        # 读取配置
+        fed_cfg = cfg.get("federated", {}) if isinstance(cfg, dict) else {}
+        client_cfg = fed_cfg.get("client", {})
+        if not isinstance(client_cfg, dict):
+            client_cfg = {}
 
-        self.aggre_mode = client_cfg.get('aggre_mode', 'FedMarkovAvg') if isinstance(client_cfg, dict) else getattr(client_cfg, 'aggre_mode', 'FedMarkovAvg')
-        self.binarize_all_layers = client_cfg.get('binarize_all_layers', True) if isinstance(client_cfg, dict) else getattr(client_cfg, 'binarize_all_layers', True)
-        self.verbose = client_cfg.get('verbose', False) if isinstance(client_cfg, dict) else getattr(client_cfg, 'verbose', False)
+        self.aggre_mode = client_cfg.get('aggre_mode', 'FedMarkovAvg')
+        self.binarize_all_layers = client_cfg.get('binarize_all_layers', True)
+        self.verbose = client_cfg.get('verbose', False)
 
     def _process_local_weights(self, round_idx) -> Dict:
-        """
-        提取本地权重并进行 Markov 二值化处理。
+        """提取 + 二值化"""
+        local_w = self._extract_model_weights(self._local_model.model)
+        global_w = self._extract_model_weights(self._global_model)
 
-        Returns:
-            Dict[name] = {
-                "value": torch.Tensor,
-                "binarized_param": {"mean", "var", "corr", "slope", "intercept"} or None,
-                "requires_grad": bool,
-            }
-        """
-        local_weights = self._extract_model_weights(self._local_model.model)
-        global_weights = self._extract_model_weights(self._global_model)
-
-        if self.aggre_mode == 'FedMarkovAvg':
-            return self._process_fed_markov_avg(local_weights, global_weights)
-        elif self.aggre_mode == 'FedBinAvg':
-            return self._process_fed_bin_avg(local_weights)
-        elif self.aggre_mode == 'FedAvg':
-            return self._process_fed_avg(local_weights)
-        else:
-            raise NotImplementedError(f"不支持的聚合模式: {self.aggre_mode}")
+        mode = self.aggre_mode
+        if mode == 'FedMarkovAvg':
+            return self._process_markov_avg(local_w, global_w)
+        elif mode == 'FedBinAvg':
+            return self._process_bin_avg(local_w)
+        elif mode == 'FedAvg':
+            return self._process_standard(local_w)
+        raise NotImplementedError(f"不支持的聚合模式: {mode}")
 
     # ---- 权重提取 ----
 
     def _extract_model_weights(self, model: nn.Module) -> Dict[str, Dict]:
-        """从模型中提取结构化权重"""
         weights = {}
         for name, param in model.named_parameters():
-            # 跳过 BatchNorm 统计参数
             if any(x in name for x in ['running_mean', 'running_var', 'num_batches_tracked']):
                 continue
 
-            binarized_param = None
+            bp = None
             if self.binarize_all_layers:
                 if 'weight' in name and not any(x in name for x in ['bn', 'batchnorm', 'norm', 'bias']):
-                    binarized_param = {
+                    bp = {
                         'slope': torch.tensor(1.0, device=param.device),
                         'intercept': torch.tensor(0.0, device=param.device),
-                        'mean': None,
-                        'var': None,
-                        'corr': None,
+                        'mean': None, 'var': None, 'corr': None,
                     }
 
             weights[name] = {
                 'value': param.data.clone(),
-                'binarized_param': binarized_param,
+                'binarized_param': bp,
                 'requires_grad': param.requires_grad,
             }
         return weights
 
     # ---- 三种处理模式 ----
 
-    def _process_fed_markov_avg(self, local_weights: Dict, global_weights: Dict) -> Dict:
-        """FedMarkovAvg: 二值化 + 统计信息"""
+    def _process_markov_avg(self, local_w, global_w) -> Dict:
         processed = {}
-
-        for key in local_weights:
-            if key not in global_weights:
-                if self.verbose:
-                    self.glogger.debug(f"跳过参数 {key}: 全局模型中不存在")
+        for key in local_w:
+            if key not in global_w:
                 continue
-
-            local_info = local_weights[key]
-            global_info = global_weights[key]
-
-            entry = {
-                'value': local_info['value'].clone(),
-                'binarized_param': copy.deepcopy(local_info['binarized_param']),
-                'requires_grad': local_info['requires_grad'],
-            }
+            li = local_w[key]
+            gi = global_w[key]
+            entry = {'value': li['value'].clone(),
+                     'binarized_param': copy.deepcopy(li['binarized_param']),
+                     'requires_grad': li['requires_grad']}
 
             if entry['binarized_param'] is not None:
-                local_param = entry['value']
-                global_param = global_info['value']
+                lp, gp = entry['value'], gi['value']
+                mean_v = lp.mean()
+                var_v = lp.var(unbiased=False)
+                gm_v = gp.mean()
+                corr_v = ((gp - gm_v) * (lp - mean_v)).mean()
 
-                # 计算标量统计信息
-                mean_val = local_param.mean()
-                var_val = local_param.var(unbiased=False)
-                global_mean_val = global_param.mean()
-                corr_val = ((global_param - global_mean_val) * (local_param - mean_val)).mean()
+                for v in [mean_v, var_v, corr_v]:
+                    if v.dim() > 0:
+                        v = v.mean()
 
-                # 确保是标量
-                for val in [mean_val, var_val, corr_val]:
-                    if val.dim() > 0:
-                        val = val.mean()
+                entry['binarized_param'].update(
+                    mean=mean_v, var=var_v, corr=corr_v)
 
-                entry['binarized_param']['mean'] = mean_val
-                entry['binarized_param']['var'] = var_val
-                entry['binarized_param']['corr'] = corr_val
-
-                # 二值化
                 slope = entry['binarized_param'].get('slope', 1.0)
                 intercept = entry['binarized_param'].get('intercept', 0.0)
-                binarized_value = (Binarize(slope * local_param + intercept) != -1).float()
-                entry['value'] = binarized_value
+                bv = (Binarize(slope * lp + intercept) != -1).float()
+                entry['value'] = bv
 
                 if self.verbose:
-                    true_ratio = binarized_value.mean().item()
-                    self.glogger.debug(f"参数 {key}: True 比例 {true_ratio:.4f}")
+                    self.glogger.debug(f"参数 {key}: True比例 {bv.mean().item():.4f}")
 
             processed[key] = entry
-
         return processed
 
-    def _process_fed_bin_avg(self, local_weights: Dict) -> Dict:
-        """FedBinAvg: 二值化但不传统计信息"""
+    def _process_bin_avg(self, local_w) -> Dict:
         processed = {}
-
-        for key in local_weights:
-            local_info = local_weights[key]
-            entry = {
-                'value': local_info['value'].clone(),
-                'binarized_param': copy.deepcopy(local_info['binarized_param']),
-                'requires_grad': local_info['requires_grad'],
-            }
-
+        for key in local_w:
+            li = local_w[key]
+            entry = {'value': li['value'].clone(),
+                     'binarized_param': copy.deepcopy(li['binarized_param']),
+                     'requires_grad': li['requires_grad']}
             if entry['binarized_param'] is not None:
-                local_param = entry['value']
                 slope = entry['binarized_param'].get('slope', 1.0)
                 intercept = entry['binarized_param'].get('intercept', 0.0)
-                entry['value'] = (Binarize(slope * local_param + intercept) != -1).float()
-                entry['binarized_param'] = None  # 不传输统计信息
-
+                entry['value'] = (Binarize(slope * entry['value'] + intercept) != -1).float()
+                entry['binarized_param'] = None
             processed[key] = entry
-
         return processed
 
-    def _process_fed_avg(self, local_weights: Dict) -> Dict:
-        """FedAvg 模式: 不做二值化，清除统计信息"""
+    def _process_standard(self, local_w) -> Dict:
         processed = {}
-
-        for key in local_weights:
-            local_info = local_weights[key]
-            processed[key] = {
-                'value': local_info['value'].clone(),
-                'binarized_param': None,
-                'requires_grad': local_info['requires_grad'],
-            }
-
+        for key in local_w:
+            li = local_w[key]
+            processed[key] = {'value': li['value'].clone(),
+                              'binarized_param': None,
+                              'requires_grad': li['requires_grad']}
         return processed

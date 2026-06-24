@@ -108,7 +108,7 @@ class BaseFedClient(fl.client.NumPyClient):
         os.makedirs(os.path.join(user_save_path, "model"), exist_ok=True)
 
         # 设置数据划分
-        from ..data.builder import get_user_data_split, setup_user_data_config
+        from ..data_splitter.builder import get_user_data_split, setup_user_data_config
         user_data_split = get_user_data_split(
             self.cfg, self.client_id, _get_cfg(self.cfg, "num_users"), self.glogger
         )
