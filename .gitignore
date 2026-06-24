@@ -5,5 +5,6 @@ exp/
 ZZZ_Abandon_Code/
 ZZZ_pic/
 model_test/
+__pycache__/
 # 防止忽略文件夹下的 .gitignore 本身
 !*/.gitignore
