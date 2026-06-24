@@ -45,14 +45,10 @@ from ..communication.serialization import (
 class BaseFederatedStrategy:
     """
     联邦学习策略基类。
-
     子类只需实现 _do_aggregate(client_weights, round_idx) → state_dict。
     调度器、验证、断点保存由基类自动处理。
 
-    round_offset: 断点续传时的轮次偏移量。
-        例如 resume_round=50 时，round_offset=50，
-        Simulation 内的 server_round=1 → 实际 round_idx=0+50=50，
-        保证日志/调度器/TensorBoard 步数与绝对轮次一致。
+    round_offset: 断点续传时的轮次偏移，server_round=1 → 实际 round_idx = 0 + offset。
     """
 
     def __init__(
