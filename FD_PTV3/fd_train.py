@@ -209,22 +209,36 @@ def main_worker(cfg):
     simulation_failed = False
     try:
         import flwr as fl
+        import inspect
 
-        history = fl.simulation.start_simulation(
-            client_fn=client_fn,
-            num_clients=NUM_USERS,
-            strategy=strategy,
-            num_server_rounds=actual_rounds,
-            client_resources={
+        # 运行时检测 Flower 版本的 API 差异
+        sig = inspect.signature(fl.simulation.start_simulation)
+        sim_kwargs = {
+            "client_fn": client_fn,
+            "num_clients": NUM_USERS,
+            "strategy": strategy,
+            "client_resources": {
                 "num_gpus": 1.0,
                 "num_cpus": ray_cfg.get("client_cpus", 2.0),
             },
-            ray_init_args={},
-            actor_kwargs={
+            "ray_init_args": {},
+            "actor_kwargs": {
                 "max_restarts": ray_cfg.get("max_restarts", 3),
                 "max_task_retries": ray_cfg.get("max_task_retries", 2),
             },
-        )
+        }
+
+        # 不同版本 rounds 参数名不同: num_rounds / num_server_rounds / config
+        if "num_rounds" in sig.parameters:
+            sim_kwargs["num_rounds"] = actual_rounds
+        elif "num_server_rounds" in sig.parameters:
+            sim_kwargs["num_server_rounds"] = actual_rounds
+        elif "config" in sig.parameters:
+            sim_kwargs["config"] = fl.server.ServerConfig(num_rounds=actual_rounds)
+
+        glogger.info(f"[Flower] start_simulation 参数: {list(sig.parameters.keys())}")
+
+        history = fl.simulation.start_simulation(**sim_kwargs)
 
         glogger.info(f"\n{'=' * 20} Simulation 完成 {'=' * 20}")
         glogger.info(f"指标摘要: {history.metrics_centralized}")
