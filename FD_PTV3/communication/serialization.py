@@ -2,9 +2,11 @@
 通信序列化层
 ============
 处理 Flower 的 List[np.ndarray] 与 Pointcept 结构化权重之间的转换。
-支持标准模式（纯 tensor state_dict）和结构化模式（含二值化统计信息）。
+支持两套传输格式：
+1. standard 标准模式：普通浮点模型state_dict，每层单独一个numpy数组
+2. structured 结构化模式：带二值化、均值/方差/相关系数统计信息的嵌套权重字典，整体打包成单个uint8字节数组
+作用：打通客户端 ↔ 服务端通信，解决Flower只能传List[np.ndarray]的限制
 """
-
 import pickle
 import io
 import numpy as np
@@ -14,13 +16,13 @@ from typing import Dict, List, Optional, Any
 
 
 # ============================================================
-# 标准模式：纯 state_dict <-> Flower Parameters
+# 标准模式：普通模型权重state_dict <-> Flower List[np.ndarray]
+# 适用：BaseFedClient 基础客户端，无任何二值化、统计信息
 # ============================================================
-
 def state_dict_to_parameters(state_dict: Dict[str, torch.Tensor]) -> List[np.ndarray]:
     """
-    将 PyTorch state_dict 转换为 Flower 的 Parameters 格式（List[np.ndarray]）。
-    标准模式，每个参数一个 ndarray。
+    编码：PyTorch权重字典 → Flower可传输数组列表
+    每层权重Tensor单独转为一个numpy数组，按层顺序存入列表
     """
     return [val.cpu().numpy() for val in state_dict.values()]
 
@@ -30,8 +32,8 @@ def parameters_to_state_dict(
     keys: List[str],
 ) -> OrderedDict:
     """
-    将 Flower Parameters 恢复为 PyTorch OrderedDict。
-    需要配合 keys 列表来还原参数名。
+    解码：Flower数组列表 → 模型可用state_dict有序字典
+    必须传入keys（层名列表），按数组顺序和层名一一对应还原权重
     """
     state_dict = OrderedDict()
     for key, arr in zip(keys, parameters):
@@ -40,37 +42,24 @@ def parameters_to_state_dict(
 
 
 # ============================================================
-# 结构化模式：含二值化统计信息的权重 <-> Flower Parameters
+# 结构化模式：带二值化统计信息的嵌套权重 <-> Flower List[np.ndarray]
+# 适用：MarkovFedClient二值化客户端，权重附带mean/var/corr等统计量
 # ============================================================
-
 def pack_structured_weights(structured_weights: Dict[str, Dict]) -> List[np.ndarray]:
     """
-    将结构化权重（含 binarized_param 统计信息）打包为 Flower 可传输的 ndarray 列表。
-
-    结构化权重格式:
-        {
-            "layer_name": {
-                "value": torch.Tensor,
-                "binarized_param": {
-                    "mean": scalar,
-                    "var": scalar,
-                    "corr": scalar,
-                    "slope": scalar,
-                    "intercept": scalar,
-                } or None,
-                "requires_grad": bool,
-            }
-        }
-
-    打包方案：使用 pickle 序列化整个字典为字节，存入单个 ndarray。
-    这样 Strategy 端可以用相同逻辑反序列化。
+    打包编码：复杂嵌套权重字典 → 单个uint8字节数组（包裹在列表返回）
+    1. 遍历所有权重，Tensor全部转numpy，剔除GPU设备依赖，变成可pickle序列化对象
+    2. 使用pickle把整个多层嵌套字典二进制序列化
+    3. 二进制字节流封装成一个uint8 np数组，外层套列表，符合Flower传输规范
+    优势：无论多少层、多少统计字段，最终只传输1个数组，大幅减少传输数量
     """
-    # 将所有 tensor 转为 cpu numpy，方便 pickle
     serializable = {}
     for key, info in structured_weights.items():
         entry = {}
         if isinstance(info, dict):
+            # 主权重张量转numpy
             entry["value"] = _tensor_to_numpy(info.get("value"))
+            # 二值化配套统计参数（mean/var/corr/slope/intercept）全部转numpy
             binarized = info.get("binarized_param")
             if binarized is not None:
                 entry["binarized_param"] = {
@@ -81,55 +70,56 @@ def pack_structured_weights(structured_weights: Dict[str, Dict]) -> List[np.ndar
                 entry["binarized_param"] = None
             entry["requires_grad"] = info.get("requires_grad", True)
         else:
-            # 兼容纯 tensor 输入
+            # 兼容纯tensor简单输入
             entry["value"] = _tensor_to_numpy(info)
             entry["binarized_param"] = None
             entry["requires_grad"] = True
         serializable[key] = entry
 
-    # Pickle 整个结构
+    # pickle序列化整个嵌套字典为二进制流
     buf = io.BytesIO()
     pickle.dump(serializable, buf)
     buf.seek(0)
 
-    # 返回单个 ndarray（Flower 可以传输）
+    # 二进制字节转为uint8数组，外层包列表，Flower仅支持 List[np.ndarray]
     return [np.frombuffer(buf.read(), dtype=np.uint8)]
 
 
 def unpack_structured_weights(ndarrays: List[np.ndarray]) -> Dict[str, Dict]:
     """
-    从 Flower ndarray 列表中恢复结构化权重。
-    是 pack_structured_weights 的逆操作。
-    返回的 value 仍是 numpy 数组（由调用方决定是否转 tensor）。
+    解包解码：单个uint8数组列表 → 还原完整结构化嵌套权重字典
+    pack_structured_weights 的逆操作，服务端接收二值化客户端数据时调用
+    返回的value是numpy数组，上层代码按需转回torch.Tensor
     """
     if not ndarrays:
         return {}
-
-    # 第一个 ndarray 包含 pickle 数据
+    # 取出唯一压缩数组，转二进制字节
     data = ndarrays[0].tobytes()
     buf = io.BytesIO(data)
+    # pickle反序列化恢复完整嵌套字典（包含binarized_param统计信息）
     structured = pickle.load(buf)
     return structured
 
 
+# ============================================================
+# 统一对外出入口（封装两种模式，上层不用手动判断分支）
+# ============================================================
 def serialize_weights_to_ndarrays(
     weights: Dict[str, Any],
     mode: str = "standard",
 ) -> List[np.ndarray]:
     """
-    统一序列化接口。
-
+    统一序列化入口，客户端 _serialize_weights 内部调用
     Args:
-        weights: 权重字典（标准 state_dict 或结构化字典）
-        mode: "standard" 用于普通 state_dict，"structured" 用于含二值化信息的权重
-
+        weights: 权重字典（普通state_dict / 带binarized_param结构化字典）
+        mode: standard 普通浮点权重 | structured 二值化带统计权重
     Returns:
-        Flower Parameters 格式的 ndarray 列表
+        Flower标准传输格式 List[np.ndarray]
     """
     if mode == "structured":
         return pack_structured_weights(weights)
     else:
-        # 标准模式：需要确保是纯 tensor dict
+        # 标准模式提取纯tensor权重，分层生成数组列表
         std_weights = {}
         for k, v in weights.items():
             if isinstance(v, dict):
@@ -147,31 +137,30 @@ def deserialize_ndarrays_to_weights(
     mode: str = "standard",
 ) -> Dict[str, Any]:
     """
-    统一反序列化接口。
-
+    统一反序列化入口，客户端 _deserialize_weights / 服务端解码调用
     Args:
-        ndarrays: Flower Parameters
-        keys: 参数名列表（标准模式需要）
-        mode: "standard" 或 "structured"
-
+        ndarrays: Flower下发/上传的数组列表
+        keys: 标准模式必须传入层名列表，结构化模式不需要
+        mode: standard / structured
     Returns:
-        权重字典
+        还原后的权重字典
     """
     if mode == "structured":
         return unpack_structured_weights(ndarrays)
     else:
-        # 标准模式
         if keys is None:
-            raise ValueError("标准模式需要提供 keys 列表")
+            raise ValueError("标准模式需要提供 keys 层名列表")
         return parameters_to_state_dict(ndarrays, keys)
 
 
 # ============================================================
-# 内部辅助函数
+# 内部私有工具：统一转换tensor/标量 → numpy，脱离GPU
 # ============================================================
-
 def _tensor_to_numpy(val) -> np.ndarray:
-    """将 tensor 或标量转为 numpy。"""
+    """
+    统一转换工具：torch.Tensor、标量、numpy数组全部转为cpu numpy数组
+    打包前必须调用，否则GPU tensor无法pickle序列化
+    """
     if val is None:
         return None
     if isinstance(val, np.ndarray):

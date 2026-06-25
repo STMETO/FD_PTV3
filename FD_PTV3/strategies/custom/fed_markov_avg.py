@@ -32,18 +32,6 @@ class FedMarkovAvgStrategy(BaseFederatedStrategy):
         self.EDE = EDE
         self.global_epochs = global_epochs
 
-    # ---- 反序列化：结构化模式 ----
-
-    def _deserialize_results(self, results) -> List[Dict]:
-        from ...communication.serialization import unpack_structured_weights
-
-        weights_list = []
-        for _, fit_res in results:
-            ndarrays = parameters_to_ndarrays(fit_res.parameters)
-            structured = unpack_structured_weights(ndarrays)
-            weights_list.append(structured)
-        return weights_list
-
     # ---- 核心聚合 ----
 
     def _do_aggregate(self, client_weights, round_idx):

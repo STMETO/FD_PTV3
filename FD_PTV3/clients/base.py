@@ -32,21 +32,15 @@ class BaseFedClient(fl.client.NumPyClient):
     直接传输 state_dict,不做二值化处理。
     """
 
-    def __init__(self, client_id: int, cfg, glogger, state_keys: Optional[list] = None):
-        """
-        联邦客户端构造函数，完成客户端基础成员变量初始化
-        Args:
-            client_id: int,客户端唯一编号,从0开始,区分不同参与训练的用户
-            cfg: 全局训练配置对象,客户端会基于该cfg生成独立本地配置
-            glogger: 日志实例，打印该客户端专属训练日志
-            state_keys: Optional[list,模型所有权重层名称列表,用于权重数组与state_dict互相映射;首次训练可传None自动提取
-        """
+    def __init__(self, client_id: int, cfg, glogger, state_keys: Optional[list] = None,
+                 weight_mode: str = "standard"):
         self.client_id = client_id
         self.cfg = cfg
-        self.glogger = glogger         
-        self.state_keys = state_keys    # 模型层名缓存，权重序列化/反序列化对齐层顺序核心依赖
-        self._local_model = None        # 本地训练模型训练器，延迟初始化（fit调用时才创建，减少内存占用）
-        self._global_model = None       # 预留全局模型副本变量，本基础客户端未使用，留给子类扩展
+        self.glogger = glogger
+        self.state_keys = state_keys
+        self.weight_mode = weight_mode  # "standard" | "structured" — 由配置文件 client.weight_mode 决定
+        self._local_model = None
+        self._global_model = None
 
     # ---- Flower NumPyClient 标准接口 ----
     def get_parameters(self, config) -> list:
@@ -284,52 +278,27 @@ class BaseFedClient(fl.client.NumPyClient):
 
 
     def _serialize_weights(self, weights: Dict) -> list:
-        """
-        将CPU上的权重字典序列化为Flower标准传输格式 list[np.ndarray]
-        自动判断两种模式：结构化压缩权重 / 标准分层数组权重
-        Args:
-            weights: 已迁移至CPU的模型state_dict
-        Returns:
-            list[np.ndarray] Flower框架规定的参数传输格式
-        """
-        # 判断是否是子类生成的结构化特殊权重（二值化/量化会带 binarized_param 标记）
-        is_structured = any(isinstance(v, dict) and 'binarized_param' in v for v in weights.values())
-        if is_structured:
-            # 结构化权重：打包为单个uint8压缩数组，大幅减少传输体积
+        """序列化权重为 Flower 传输格式，模式由 weight_mode 配置决定。"""
+        if self.weight_mode == "structured":
             return pack_structured_weights(weights)
-        else:
-            # 普通原始权重分支
-            if self.state_keys:
-                # 按全局统一层名顺序过滤、排序权重，保证服务端解码对齐
-                filtered_weights = {k: weights[k] for k in self.state_keys if k in weights}
-                return state_dict_to_parameters(filtered_weights)
-            # 无缓存层名，直接全部权重转数组列表
-            return state_dict_to_parameters(weights)
+        # standard 模式：逐层转为 numpy 数组
+        if self.state_keys:
+            return state_dict_to_parameters({k: weights[k] for k in self.state_keys if k in weights})
+        return state_dict_to_parameters(weights)
 
 
 
     def _deserialize_weights(self, parameters) -> Dict:
-        """
-        反向解码:将服务端下发的list[np.ndarray]还原为模型state_dict字典
-        自动兼容两种传输格式:压缩单数组 / 分层数组列表
-        Args:
-            parameters: 服务端下发的序列化权重数组列表
-        Returns:
-            还原后的权重字典,空输入返回空dict
-        """
-        # 空参数直接返回空字典
+        """反序列化服务端权重，模式由 weight_mode 配置决定。"""
         if not parameters:
             return {}
-        # 分支1：压缩结构化权重（仅1个uint8数组）
-        if len(parameters) == 1 and parameters[0].dtype == np.uint8:
+        if self.weight_mode == "structured":
             return unpack_structured_weights(parameters)
-        # 分支2：标准分层数组，存在缓存层名且数组数量与层数匹配
-        if self.state_keys and len(parameters) == len(self.state_keys):
-            # 统一转为np数组，防止部分元素是其他类型
-            np_params = [np.array(p) if not isinstance(p, np.ndarray) else p for p in parameters]
-            return parameters_to_state_dict(np_params, self.state_keys)
-        # 格式不匹配、无层名缓存，返回空字典，上层会兜底从空白模型提取keys
-        return {}
+        # standard 模式
+        if not self.state_keys:
+            return {}
+        np_params = [np.array(p) if not isinstance(p, np.ndarray) else p for p in parameters]
+        return parameters_to_state_dict(np_params, self.state_keys)
 
 
     def _get_num_examples(self, user_cfg) -> int:

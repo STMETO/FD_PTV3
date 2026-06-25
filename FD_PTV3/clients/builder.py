@@ -57,6 +57,9 @@ def build_client_fn(cfg, save_path: str, state_keys=None):
     client_cls = get_client_class(client_type)
 
     # 闭包函数：Flower Ray仿真框架回调入口，每个子进程单独执行一次
+    # 从配置读取 weight_mode，默认 standard
+    weight_mode = client_cfg.get("weight_mode", "standard") if isinstance(client_cfg, dict) else "standard"
+
     def client_fn(cid: str):
         # 1. 深拷贝全局配置，每个客户端拥有独立cfg副本，进程间互不污染
         worker_cfg = copy.deepcopy(cfg)
@@ -92,6 +95,7 @@ def build_client_fn(cfg, save_path: str, state_keys=None):
             cfg=worker_cfg,
             glogger=worker_logger,
             state_keys=state_keys,
+            weight_mode=weight_mode,
         )
 
     # 返回闭包工厂函数，供Flower仿真入口调用

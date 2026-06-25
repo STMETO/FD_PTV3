@@ -62,6 +62,7 @@ class BaseFederatedStrategy:
         writer=None,
         save_path: str = "./",
         round_offset: int = 0,
+        weight_mode: str = "standard",
         **kwargs,
     ):
         self.cfg = cfg
@@ -74,6 +75,7 @@ class BaseFederatedStrategy:
         self.save_path = save_path
         self.current_round = 0
         self.round_offset = round_offset
+        self.weight_mode = weight_mode  # "standard" | "structured"
         self.global_model_path = os.path.join(save_path, "Fed_model", "global_last.pth")
 
     # ================================================================
@@ -173,15 +175,16 @@ class BaseFederatedStrategy:
     # ================================================================
 
     def _deserialize_results(self, results) -> List[Dict]:
-        """反序列化客户端结果 → state_dict 列表"""
-        if hasattr(self, '_deserialize_structured'):
-            return self._deserialize_structured(results)
+        """反序列化客户端结果，模式由 weight_mode 配置决定。"""
+        from ..communication.serialization import unpack_structured_weights
 
         weights_list = []
         for _, fit_res in results:
             ndarrays = parameters_to_ndarrays(fit_res.parameters)
-            sd = parameters_to_state_dict(ndarrays, self.state_keys)
-            weights_list.append(sd)
+            if self.weight_mode == "structured":
+                weights_list.append(unpack_structured_weights(ndarrays))
+            else:
+                weights_list.append(parameters_to_state_dict(ndarrays, self.state_keys))
         return weights_list
 
     def _load_global_model(self):
@@ -261,11 +264,13 @@ class BaseFederatedStrategy:
     # ================================================================
 
     def state_dict(self):
-        return {"current_round": self.current_round, "round_offset": self.round_offset}
+        return {"current_round": self.current_round, "round_offset": self.round_offset,
+                "weight_mode": self.weight_mode}
 
     def load_state_dict(self, state_dict):
         self.current_round = state_dict.get("current_round", self.current_round)
         self.round_offset = state_dict.get("round_offset", self.round_offset)
+        self.weight_mode = state_dict.get("weight_mode", self.weight_mode)
 
     def update_lr(self, new_lr):
         pass

@@ -26,11 +26,11 @@ federated = dict(
     num_users=3,
     total_rounds=100,
     users_per_gpu=1,
-    msg="FedMarkovAvg测试",
+    msg="FedAvg",
     
     # --- 算法选择 ---
     # 可选项: 'FedAvg', 'FedAvgM', 'FedProx', 'FedAdam', 'FedMarkovAvg'
-    aggregation_method="FedMarkovAvg",
+    aggregation_method="FedAvg",
 
     # --- 数据拆分策略配置（使用注册器机制）---
     data_split_strategy=dict(
@@ -40,17 +40,52 @@ federated = dict(
             validation_area="Area_5",
         ),
     ),
+
     client=dict(
-        type="MarkovFedClient",     # 修改为马尔科夫客户端
-        weight_mode="structured",   # Markov二值化权重须用结构化打包
-        aggre_mode="FedMarkovAvg",  # 聚合模式
-        binarize_all_layers=True,   # 是否对所有层进行二值化
-        verbose=True,               # 详细日志
+        type="FedClientBase",  # 使用基础客户端
+        weight_mode="standard",  # "standard"(默认逐层数组) | "structured"(二进制打包)
     ),
+
+    # --- 算法专属超参数 ---
     hyperparameters=dict(
+        fedavg=dict(),
+        fedavgm=dict(
+            beta=0.9,
+            server_lr=1.0,
+            server_lr_scheduler=dict(
+                type="FedServerLinearWarmupLR",
+                initial_lr=0.7,
+                warmup_rounds=30,
+                warmup_start_lr=0.7,
+                max_lr=1.2,
+                final_lr=1.0
+            ),
+            server_momentum_scheduler=dict(
+                type="FedServerLinearWarmupMomentum",
+                initial_beta=0.3,
+                warmup_rounds=30,
+                warmup_start_beta=0.3,
+                max_beta=0.90,
+                final_beta=0.90
+            ),
+        ),
+        fedprox=dict(
+            mu=0.01
+        ),
+        fedadam=dict(
+            lr=0.001,
+            beta1=0.9,
+            beta2=0.999,
+            eps=1e-8,
+            weight_decay=0.0,
+            server_lr_scheduler=dict(
+                type="FedServerCosineAnnealingLR",
+                initial_lr=0.001,
+                min_lr=0.0001
+            )
+        ),
         fedmarkovavg=dict(
-            epsilon=1e-8,               # 数值稳定性
-            aggre_mode="FedMarkovAvg"   # 服务端聚合模式
+            epsilon=1e-6  # 服务端也增加数值稳定性
         )
     )
 )

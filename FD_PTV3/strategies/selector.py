@@ -141,6 +141,10 @@ def build_strategy(
         server_momentum_scheduler = build_fed_server_momentum_scheduler(momentum_config, total_rounds)
         glogger.info(f"[调度器] Momentum: {momentum_config.get('type')}")
 
+    # 从配置读取 weight_mode，默认 standard
+    client_cfg = fed_cfg.get("client", {})
+    weight_mode = client_cfg.get("weight_mode", "standard") if isinstance(client_cfg, dict) else "standard"
+
     # ---- 通用参数 ----
     common_kwargs = dict(
         cfg=cfg,
@@ -151,7 +155,8 @@ def build_strategy(
         server_momentum_scheduler=server_momentum_scheduler,
         writer=writer,
         save_path=save_path,
-        round_offset=resume_round,  # Flower Simulation 断点续传：策略内部使用绝对轮次
+        round_offset=resume_round,
+        weight_mode=weight_mode,
     )
 
     # ---- 选择策略 ----

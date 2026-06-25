@@ -331,19 +331,13 @@ def main_worker(cfg):
                 # 返回：arrs(本地权重数组)、n_ex(客户端样本总量)、meta(额外元信息)
                 arrs, n_ex, meta = client.fit(global_params, {"round_idx": round_idx})
 
-                # 权重反序列化两种分支：
-                # 分支1：二进制压缩权重（单uint8数组），解包还原完整权重
-                if arrs and len(arrs) == 1 and arrs[0].dtype == np.uint8:
-                    local_state = unpack_structured_weights(arrs)
-                    w_locals.append(local_state)
-                # 分支2：标准numpy数组列表，根据全局模型key还原state_dict
-                elif arrs and len(arrs) == len(state_keys):
-                    local_state = parameters_to_state_dict(
+                weight_mode = fed_cfg.get("client", {}).get("weight_mode", "standard")
+                if weight_mode == "structured":
+                    w_locals.append(unpack_structured_weights(arrs) if arrs else {})
+                else:
+                    w_locals.append(parameters_to_state_dict(
                         [np.array(p) if not isinstance(p, np.ndarray) else p for p in arrs],
-                        state_keys)
-                    w_locals.append(local_state)
-                else:       # 客户端返回权重非法，存入空字典占位
-                    w_locals.append({})
+                        state_keys) if arrs else {})
                 num_ok += 1
                 glogger.info(f"用户 {uid + 1} 训练完成")
             except Exception as e:
