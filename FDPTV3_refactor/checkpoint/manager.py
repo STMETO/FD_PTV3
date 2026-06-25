@@ -126,3 +126,47 @@ class CheckpointManager:
 
     def cleanup_components(self, save_path, glogger=None):
         cleanup_fed_state(save_path, glogger)
+
+    # ── 断点续传：本轮已训练用户权重恢复 ──
+
+    def recover_completed_users(self, save_path, num_completed: int, glogger=None):
+        """从磁盘恢复本轮已完成的用户权重，用于断点续传时收集完整 client_updates。
+
+        当训练在中途用户被中断重启后，本轮前面已跑完的用户权重不会在
+        当前进程中重新训练，因此需要从磁盘 checkpoint 中恢复。
+
+        Args:
+            save_path: 实验根目录
+            num_completed: 已完成的用户数 (0-based count，即 start_uid)
+            glogger: 日志记录器
+
+        Returns:
+            list[dict]: 已恢复的 client_updates 列表
+        """
+        from ..utils.indexing import to_display_user
+
+        recovered = []
+        for uid in range(num_completed):
+            ckpt_path = os.path.join(save_path, f"user_{to_display_user(uid)}",
+                                     "model", "model_last.pth")
+            if not os.path.isfile(ckpt_path):
+                if glogger:
+                    glogger.warning(f"用户 {to_display_user(uid)} 检查点不存在: {ckpt_path}")
+                continue
+            try:
+                sd = torch.load(ckpt_path, map_location="cpu")
+                recovered.append({
+                    "client_id": uid,
+                    "arrays": [
+                        v.cpu().numpy() if isinstance(v, torch.Tensor) else v
+                        for v in sd.values()
+                    ],
+                    "num_examples": 1,
+                    "metrics": {"source": "checkpoint"},
+                })
+                if glogger:
+                    glogger.info(f"  [checkpoint] 用户 {to_display_user(uid)} 权重已恢复")
+            except Exception as exc:
+                if glogger:
+                    glogger.warning(f"  [checkpoint] 用户 {to_display_user(uid)} 权重恢复失败: {exc}")
+        return recovered

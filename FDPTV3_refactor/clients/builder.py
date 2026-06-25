@@ -2,7 +2,6 @@
 
 import copy
 import logging
-import os
 
 from ..registry import client_registry
 from ..utils.config import _get_cfg, _set_cfg
@@ -19,7 +18,11 @@ def get_client_class(client_type: str):
 
 
 def build_client_fn(cfg, save_path: str, state_keys=None):
-	"""生成 Flower Simulation 使用的 client_fn。"""
+	"""生成 Flower Simulation 使用的 client_fn。
+
+	客户端日志只输出到控制台（统一通过主进程日志捕获），不额外生成
+	client_*.log 文件，避免实验目录散落无用日志。
+	"""
 	fed_cfg = _get_cfg(cfg, "federated", {})
 	client_cfg = fed_cfg.get("client", {})
 
@@ -34,17 +37,9 @@ def build_client_fn(cfg, save_path: str, state_keys=None):
 		worker_cfg = copy.deepcopy(cfg)
 		_set_cfg(worker_cfg, "enable_wandb", False)
 
-		client_log_file = os.path.join(save_path, f"client_{cid}.log")
 		worker_logger = logging.getLogger(f"fl_client_{cid}")
 		worker_logger.setLevel(logging.INFO)
 		if not worker_logger.handlers:
-			file_handler = logging.FileHandler(client_log_file, mode="a")
-			file_handler.setFormatter(logging.Formatter(
-				"%(asctime)s | %(levelname)s | %(message)s",
-				datefmt="%Y-%m-%d %H:%M:%S",
-			))
-			worker_logger.addHandler(file_handler)
-
 			stream_handler = logging.StreamHandler()
 			stream_handler.setFormatter(logging.Formatter(
 				"%(asctime)s | %(levelname)s | [Worker %(name)s] %(message)s",
@@ -65,4 +60,3 @@ def build_client_fn(cfg, save_path: str, state_keys=None):
 
 
 __all__ = ["build_client_fn", "get_client_class"]
-

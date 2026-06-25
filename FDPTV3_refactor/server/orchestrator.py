@@ -122,7 +122,6 @@ class DefaultFederatedServer(BaseFederatedServer):
             self._run_round(
                 cfg=cfg,
                 net_glob=net_glob,
-                state_keys=state_keys,
                 strategy=strategy,
                 client_fn=client_fn,
                 runtime=runtime,
@@ -172,7 +171,16 @@ class DefaultFederatedServer(BaseFederatedServer):
         client_updates = []
         num_ok = 0
 
+        # 断点续传：收集本轮已完成的用户权重，避免重启后只聚合部分用户
         start_uid = runtime.resume.user_idx if round_idx == runtime.resume.round_idx else 0
+        if start_uid > 0:
+            glogger.info(
+                f"[断点续传] 本轮用户 1..{to_display_user(start_uid - 1)} 已完成，从 checkpoint 恢复权重"
+            )
+            recovered = self.checkpoints.recover_completed_users(save_path, start_uid, glogger)
+            client_updates.extend(recovered)
+            num_ok += len([u for u in recovered if u.get("arrays")])
+
         for uid in range(start_uid, runtime.num_users):
             self.checkpoints.save_resume(resume_file, round_idx, uid)
             glogger.info(f"用户 {to_display_user(uid)}/{runtime.num_users} 开始...")
@@ -233,6 +241,11 @@ class DefaultFederatedServer(BaseFederatedServer):
             if wandb.run is not None:
                 wandb.finish()
             setup_wandb(cfg, save_path, glogger)
+
+        # 每轮结束强制回收 GPU 缓存，避免验证集数据残留导致下轮显存紧张
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     @staticmethod
     def _finalize(net_glob, cfg, save_path, resume_file, glogger):

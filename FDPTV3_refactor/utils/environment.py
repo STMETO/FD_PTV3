@@ -46,7 +46,7 @@ def cleanup_client_checkpoints(save_path, num_users, glogger):
 	"""清理所有客户端的本地检查点。"""
 	glogger.info("清理本轮所有客户端的本地检查点...")
 	for index in range(num_users):
-		client_checkpoint = os.path.join(save_path, f"user_{index}", "model", "model_last.pth")
+		client_checkpoint = os.path.join(save_path, f"user_{to_display_user(index)}", "model", "model_last.pth")
 		if os.path.exists(client_checkpoint):
 			try:
 				os.remove(client_checkpoint)

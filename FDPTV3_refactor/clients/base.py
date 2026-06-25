@@ -70,7 +70,9 @@ class BaseFedClient(fl.client.NumPyClient):
 		_set_cfg(user_cfg, "user_id", self.client_id)
 		_set_cfg(user_cfg, "root_save_path", _get_cfg(self.cfg, "save_path"))
 
-		user_save_path = os.path.join(_get_cfg(self.cfg, "save_path"), f"user_{self.client_id}")
+		user_save_path = os.path.join(
+            _get_cfg(self.cfg, "save_path"), f"user_{to_display_user(self.client_id)}"
+        )
 		_set_cfg(user_cfg, "save_path", user_save_path)
 		os.makedirs(os.path.join(user_save_path, "model"), exist_ok=True)
 
