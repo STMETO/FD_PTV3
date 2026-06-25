@@ -10,6 +10,11 @@ from ..utils.config import _get_cfg
 from .base import NativeStrategyWrapper
 
 
+# Flower 内置策略通用默认聚合函数，避免 "No fit_metrics_aggregation_fn provided" 警告
+def _default_metrics_agg(metrics_list):
+    return {}
+
+
 def _build_native_fedavg(cfg, hyperparams: dict) -> fl.server.strategy.FedAvg:
     fed_cfg = _get_cfg(cfg, "federated", {})
     num_users = fed_cfg.get("num_users", 2)
@@ -19,6 +24,7 @@ def _build_native_fedavg(cfg, hyperparams: dict) -> fl.server.strategy.FedAvg:
         min_fit_clients=num_users,
         min_evaluate_clients=0,
         min_available_clients=num_users,
+        fit_metrics_aggregation_fn=_default_metrics_agg,
     )
 
 
@@ -33,6 +39,7 @@ def _build_native_fedprox(cfg, hyperparams: dict) -> fl.server.strategy.FedProx:
         min_evaluate_clients=0,
         min_available_clients=num_users,
         proximal_mu=mu,
+        fit_metrics_aggregation_fn=_default_metrics_agg,
     )
 
 
@@ -50,6 +57,7 @@ def _build_native_fedadam(cfg, hyperparams: dict) -> fl.server.strategy.FedAdam:
         beta_1=hyperparams.get("beta1", hyperparams.get("beta_1", 0.9)),
         beta_2=hyperparams.get("beta2", hyperparams.get("beta_2", 0.99)),
         tau=hyperparams.get("eps", hyperparams.get("tau", 1e-9)),
+        fit_metrics_aggregation_fn=_default_metrics_agg,
     )
 
 
@@ -67,6 +75,7 @@ def _build_native_fedyogi(cfg, hyperparams: dict) -> fl.server.strategy.FedYogi:
         beta_1=hyperparams.get("beta1", 0.9),
         beta_2=hyperparams.get("beta2", 0.99),
         tau=hyperparams.get("tau", 1e-9),
+        fit_metrics_aggregation_fn=_default_metrics_agg,
     )
 
 
