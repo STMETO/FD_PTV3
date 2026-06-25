@@ -2,8 +2,8 @@
 策略自动选择器
 =============
 根据配置文件中的 aggregation_method 自动选择：
-- Flower 原生（FedAvg / FedProx / FedAdam / FedYogi）→ 使用 NativeStrategyWrapper
-- 自定义策略（FedAvgM / FedMarkovAvg）→ 使用注册的自定义类
+- Flower 原生(FedAvg / FedProx / FedAdam / FedYogi)→ 使用 NativeStrategyWrapper
+- 自定义策略(FedAvgM / FedMarkovAvg)→ 使用注册的自定义类
 """
 
 import flwr as fl
