@@ -5,8 +5,6 @@ If you want to start from a known-good baseline, duplicate this file first and
 edit the copy instead of changing the original in place.
 """
 
-import os
-
 _base_ = ["../_base_/default_runtime.py"]
 
 # misc custom setting
@@ -26,7 +24,7 @@ enable_wandb = True
 wandb_offline=True  # True=离线, False=在线
 wandb_project = "FDPTV3" # my
 # 推荐通过环境变量提供密钥，避免把真实 token 固化在配置文件里。
-wandb_key = os.getenv("WANDB_API_KEY")
+wandb_key = None  # 通过环境变量 WANDB_API_KEY 提供，或直接写 token
 
 train = dict(type="FedTrainer")
 

@@ -8,3 +8,4 @@ model_test/
 __pycache__/
 # 防止忽略文件夹下的 .gitignore 本身
 !*/.gitignore
+FDPTV3_minimal_ptv3_s3dis/data
