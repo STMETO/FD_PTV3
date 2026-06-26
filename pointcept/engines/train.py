@@ -367,12 +367,13 @@ class FedTrainer(TrainerBase):
         self.start_epoch = 0
         self.max_epoch = cfg.eval_epoch
         self.best_metric_value = -torch.inf
+        display_user_id = cfg.user_id + 1 if getattr(cfg, "user_id", None) is not None else "global"
         self.logger = get_root_logger(
             #log_file=os.path.join(cfg.save_path, "train.log"),
-            log_file=os.path.join(cfg.save_path, f"train_user_{cfg.user_id}.log"),  #日志文件路径my
+            log_file=os.path.join(cfg.save_path, f"train_user_{display_user_id}.log"),  #日志文件路径my
             #file_mode="a" if cfg.resume else "w",
             file_mode="a" if cfg.resume else "a",   # my
-            name=f"user_{cfg.user_id}"  #日志名称 # my
+            name=f"user_{display_user_id}"  #日志名称 # my
         )
         self.logger.info("=> Loading config ...")
         self.cfg = cfg
